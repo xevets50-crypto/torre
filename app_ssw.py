@@ -7,7 +7,7 @@ from datetime import datetime
 import io
 import matplotlib.pyplot as plt
 
-PASTA_DADOS = "dados"
+PASTA_DADOS = "DADOS"
 st.set_page_config(layout="wide")
 st.title("🚚 Torre de Controle Logística")
 
