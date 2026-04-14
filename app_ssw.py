@@ -41,15 +41,42 @@ def limpar_nome(texto):
     texto = re.sub(r'\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}', '', texto)
     return texto.strip().upper()
 
+def gerar_excel(df_dict):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        for nome, df_aba in df_dict.items():
+            df_aba.to_excel(writer, index=False, sheet_name=nome)
+    output.seek(0)
+    return output
+
+# =============================
+# INPUT (UPLOAD OU PASTA)
+# =============================
+upload = st.sidebar.file_uploader("Upload", type=["xlsx"])
+
 def arquivo_recente():
     if not os.path.exists(PASTA_DADOS):
         return None
+
     arquivos = [
         os.path.join(PASTA_DADOS, f)
         for f in os.listdir(PASTA_DADOS)
         if f.endswith(".xlsx") and not f.startswith("~$")
     ]
-    return max(arquivos, key=os.path.getmtime) if arquivos else None
+
+    if not arquivos:
+        return None
+
+    return max(arquivos, key=os.path.getmtime)
+
+if upload is not None:
+    caminho = upload
+else:
+    caminho = arquivo_recente()
+
+if not caminho:
+    st.error("Nenhum arquivo encontrado (upload ou pasta dados).")
+    st.stop()
 
 @st.cache_data
 def ler_excel(arquivo):
@@ -66,24 +93,6 @@ def tratar_dados(df):
     df = df.loc[:, ~df.columns.str.contains("unnamed", case=False)]
     df = df.dropna(how="all")
     return df
-
-def gerar_excel(df_dict):
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-        for nome, df_aba in df_dict.items():
-            df_aba.to_excel(writer, index=False, sheet_name=nome)
-    output.seek(0)
-    return output
-
-# =============================
-# INPUT
-# =============================
-upload = st.sidebar.file_uploader("Upload", type=["xlsx"])
-caminho = upload if upload else arquivo_recente()
-
-if not caminho:
-    st.error("Nenhum arquivo encontrado")
-    st.stop()
 
 df = tratar_dados(ler_excel(caminho))
 
@@ -208,7 +217,7 @@ df.loc[df["Ocorrencia"] == 85, "Prioridade"] = "MEDIA"
 df.loc[(df["Status"] == "INSUCESSO") | (df["Dias_Atraso"] >= 3), "Prioridade"] = "ALTA"
 
 # =============================
-# FILTROS (VISUAL SOMENTE)
+# FILTROS
 # =============================
 st.sidebar.header("Filtros")
 
@@ -237,7 +246,7 @@ if filtro_status:
 df_filtro = df_filtro.sort_values(by="Data_Ultima_Ocorrencia", ascending=True)
 
 # =============================
-# 🔵 BASE ANALÍTICA (NÃO FILTRADA)
+# BASE ANALÍTICA (FIX)
 # =============================
 df_analise = df_base.copy()
 
@@ -264,9 +273,28 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🚚 Saída para Entrega"
 ])
 
+# =============================
+# DASHBOARD RESTAURADO
+# =============================
 with tab1:
-    st.metric("Total", len(df_filtro))
-    st.metric("Pendentes", (df_filtro["Status"] == "PENDENTE").sum())
+    total = len(df_filtro)
+
+    entregues_prazo = (df_filtro["Status"] == "ENTREGUE NO PRAZO").sum()
+    entregues_atraso = (df_filtro["Status"] == "ENTREGUE EM ATRASO").sum()
+    pendentes = (df_filtro["Status"] == "PENDENTE").sum()
+    devolucoes = (df_filtro["Status"] == "DEVOLUÇÃO").sum()
+
+    def perc(x):
+        return f"{(x / total * 100):.1f}%" if total > 0 else "0%"
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Entregues no Prazo", entregues_prazo, perc(entregues_prazo))
+    c2.metric("Entregues com Atraso", entregues_atraso, perc(entregues_atraso))
+    c3.metric("Pendentes", pendentes, perc(pendentes))
+    c4.metric("Devoluções", devolucoes, perc(devolucoes))
+
+    st.divider()
+    st.subheader("Distribuição de Status")
 
     fig, ax = plt.subplots()
     df_filtro["Status"].value_counts().plot(kind="bar", ax=ax)
