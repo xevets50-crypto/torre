@@ -8,7 +8,12 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-PASTA_DADOS = "DADOS"
+# =============================
+# CONFIGURAÇÃO DE DIRETÓRIOS E PÁGINA
+# =============================
+
+DIRETORIO_BASE = os.path.dirname(os.path.abspath(__file__))
+PASTA_DADOS = os.path.join(DIRETORIO_BASE, "DADOS")
 
 st.set_page_config(
     layout="wide", page_title="Torre de Controle Logística", page_icon="🚚"
@@ -149,33 +154,49 @@ def gerar_excel(df_dict):
 
 
 def ler_arquivo(arquivo):
-    """Lê um arquivo individual (Excel ou CSV) identificando o cabeçalho correto."""
+    """Lê um arquivo individual (Excel ou CSV) com suporte a múltiplos encodings e separadores."""
     nome_arq = getattr(arquivo, "name", str(arquivo))
 
+    def reset_stream():
+        if hasattr(arquivo, "seek"):
+            arquivo.seek(0)
+
     if nome_arq.lower().endswith(".csv"):
-        # Tenta ler com vírgula e ponto e vírgula
-        for sep in [",", ";"]:
-            for i in range(5):
+        encodings = ["latin1", "cp1252", "iso-8859-1", "utf-8", "utf-8-sig"]
+        separadores = [",", ";"]
+
+        for enc in encodings:
+            for sep in separadores:
+                for i in range(5):
+                    try:
+                        reset_stream()
+                        df = pd.read_csv(arquivo, sep=sep, header=i, encoding=enc, low_memory=False)
+                        cols = [normalizar(c) for c in df.columns]
+                        if any("nota" in c or "previs" in c or "doc" in c for c in cols):
+                            return df
+                    except Exception:
+                        continue
+
+        for enc in encodings:
+            for sep in separadores:
                 try:
-                    df = pd.read_csv(arquivo, sep=sep, header=i, low_memory=False)
-                    cols = [normalizar(c) for c in df.columns]
-                    if any("nota" in c or "previs" in c or "doc" in c for c in cols):
-                        return df
+                    reset_stream()
+                    return pd.read_csv(arquivo, sep=sep, header=0, encoding=enc, low_memory=False)
                 except Exception:
                     continue
-        return pd.read_csv(arquivo, sep=",", header=0, low_memory=False)
 
     else:
-        # Tratamento para Excel (.xlsx / .xls)
         for i in range(5):
             try:
+                reset_stream()
                 df = pd.read_excel(arquivo, header=i)
                 cols = [normalizar(c) for c in df.columns]
                 if any("nota" in c or "previs" in c for c in cols):
                     return df
             except Exception:
                 continue
-        return pd.read_excel(arquivo, header=1)
+        reset_stream()
+        return pd.read_excel(arquivo, header=0)
 
 
 def tratar_dados(df):
@@ -197,14 +218,16 @@ uploads = st.sidebar.file_uploader(
 
 def listar_arquivos_pasta():
     if not os.path.exists(PASTA_DADOS):
+        os.makedirs(PASTA_DADOS, exist_ok=True)
         return []
 
-    return [
-        os.path.join(PASTA_DADOS, f)
-        for f in os.listdir(PASTA_DADOS)
-        if (f.endswith(".xlsx") or f.endswith(".xls") or f.endswith(".csv"))
-        and not f.startswith("~$")
-    ]
+    arquivos = []
+    for f in os.listdir(PASTA_DADOS):
+        caminho_completo = os.path.join(PASTA_DADOS, f)
+        if (f.lower().endswith(".xlsx") or f.lower().endswith(".xls") or f.lower().endswith(".csv")) and not f.startswith("~$"):
+            arquivos.append(caminho_completo)
+
+    return arquivos
 
 
 lista_arquivos = []
