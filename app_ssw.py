@@ -48,7 +48,7 @@ DESCRICOES_SSW = {
 
 
 # =============================
-# FUNÇÕES DE TRATAMENTO
+# FUNÇÕES DE TRATAMENTO E LEITURA
 # =============================
 
 
@@ -148,50 +148,34 @@ def gerar_excel(df_dict):
     return output
 
 
-# =============================
-# INPUT (UPLOAD OU PASTA)
-# =============================
+def ler_arquivo(arquivo):
+    """Lê um arquivo individual (Excel ou CSV) identificando o cabeçalho correto."""
+    nome_arq = getattr(arquivo, "name", str(arquivo))
 
-upload = st.sidebar.file_uploader("Upload", type=["xlsx"])
+    if nome_arq.lower().endswith(".csv"):
+        # Tenta ler com vírgula e ponto e vírgula
+        for sep in [",", ";"]:
+            for i in range(5):
+                try:
+                    df = pd.read_csv(arquivo, sep=sep, header=i, low_memory=False)
+                    cols = [normalizar(c) for c in df.columns]
+                    if any("nota" in c or "previs" in c or "doc" in c for c in cols):
+                        return df
+                except Exception:
+                    continue
+        return pd.read_csv(arquivo, sep=",", header=0, low_memory=False)
 
-
-def arquivo_recente():
-    if not os.path.exists(PASTA_DADOS):
-        return None
-
-    arquivos = [
-        os.path.join(PASTA_DADOS, f)
-        for f in os.listdir(PASTA_DADOS)
-        if f.endswith(".xlsx") and not f.startswith("~$")
-    ]
-
-    if not arquivos:
-        return None
-
-    return max(arquivos, key=os.path.getmtime)
-
-
-if upload is not None:
-    caminho = upload
-else:
-    caminho = arquivo_recente()
-
-
-if not caminho:
-    st.error("Nenhum arquivo encontrado (upload ou pasta dados).")
-    st.stop()
-
-
-@st.cache_data
-def ler_excel(arquivo):
-    for i in range(5):
-        df = pd.read_excel(arquivo, header=i)
-        cols = [normalizar(c) for c in df.columns]
-
-        if any("nota" in c or "previs" in c for c in cols):
-            return df
-
-    return pd.read_excel(arquivo, header=1)
+    else:
+        # Tratamento para Excel (.xlsx / .xls)
+        for i in range(5):
+            try:
+                df = pd.read_excel(arquivo, header=i)
+                cols = [normalizar(c) for c in df.columns]
+                if any("nota" in c or "previs" in c for c in cols):
+                    return df
+            except Exception:
+                continue
+        return pd.read_excel(arquivo, header=1)
 
 
 def tratar_dados(df):
@@ -202,7 +186,51 @@ def tratar_dados(df):
     return df
 
 
-df = tratar_dados(ler_excel(caminho))
+# =============================
+# INPUT (UPLOAD MÚLTIPLO OU PASTA)
+# =============================
+
+uploads = st.sidebar.file_uploader(
+    "Upload de Arquivos (CSV / Excel)", type=["xlsx", "xls", "csv"], accept_multiple_files=True
+)
+
+
+def listar_arquivos_pasta():
+    if not os.path.exists(PASTA_DADOS):
+        return []
+
+    return [
+        os.path.join(PASTA_DADOS, f)
+        for f in os.listdir(PASTA_DADOS)
+        if (f.endswith(".xlsx") or f.endswith(".xls") or f.endswith(".csv"))
+        and not f.startswith("~$")
+    ]
+
+
+lista_arquivos = []
+if uploads:
+    lista_arquivos = uploads
+else:
+    lista_arquivos = listar_arquivos_pasta()
+
+if not lista_arquivos:
+    st.error("Nenhum arquivo encontrado (faça o upload ou adicione arquivos na pasta 'DADOS').")
+    st.stop()
+
+# Empilhamento de múltiplos arquivos
+dfs_carregados = []
+for arq in lista_arquivos:
+    try:
+        df_temp = tratar_dados(ler_arquivo(arq))
+        dfs_carregados.append(df_temp)
+    except Exception as e:
+        st.sidebar.warning(f"Erro ao ler arquivo {getattr(arq, 'name', arq)}: {e}")
+
+if not dfs_carregados:
+    st.error("Não foi possível carregar nenhum dos arquivos fornecidos.")
+    st.stop()
+
+df = pd.concat(dfs_carregados, ignore_index=True)
 
 
 # =============================
@@ -255,8 +283,8 @@ def pegar_coluna_segura(df, letra):
 # Colunas Fixas por Letra do Excel:
 col_rem = pegar_coluna_segura(df, "P")         # Remetente
 col_dest = pegar_coluna_segura(df, "AJ")      # Destinatário
-col_unidade_receptora = pegar_coluna_segura(df, "BA")  # Unidade Receptora / Destino (Fixa na Coluna BA)
-col_unidade = pegar_coluna_segura(df, "EB")   # Unidade da Ultima Ocorrência (Fixada na Coluna EB)
+col_unidade_receptora = pegar_coluna_segura(df, "BA")  # Unidade Receptora / Destino (Coluna BA)
+col_unidade = pegar_coluna_segura(df, "EB")   # Unidade da Ultima Ocorrência (Coluna EB)
 
 
 # =============================
@@ -361,14 +389,20 @@ df["Dias_Sem_Movimento"] = (
 
 
 # =============================
-# FILTRAGEM E DEDUPLICAÇÃO
+# FILTRAGEM E DEDUPLICAÇÃO DE NOTAS FISCAIS
 # =============================
 
 OCORRENCIAS_IGNORAR = [36, 87, 93, 94, 99]
 
+# Ordenamos pela Data da Ocorrência para que a última atualização de cada Nota Fiscal seja mantida
+if "Data_Ultima_Ocorrencia" in df.columns:
+    df = df.sort_values(by=["NF", "Data_Ultima_Ocorrencia"], ascending=[True, True])
+else:
+    df = df.sort_values(by=["NF"])
+
+# Remove ocorrências a serem ignoradas e remove notas duplicadas dos arquivos empilhados
 df = (
     df[~df["Ocorrencia"].isin(OCORRENCIAS_IGNORAR)]
-    .sort_values(by=["NF"])
     .drop_duplicates(subset=["NF"], keep="last")
     .copy()
 )
@@ -449,7 +483,6 @@ busca_nf = st.sidebar.text_input(
     "Buscar por Nota Fiscal (NF)", placeholder="Ex: 12345 ou 12345, 67890"
 )
 
-# Opções tratadas com astype(str) para evitar erro de ordenação (str vs int)
 unidades_receptora_opts = sorted(df["Unidade_Receptora"].dropna().astype(str).unique())
 unidades_opts = sorted(df["Unidade_Atual"].dropna().astype(str).unique())
 remetentes_opts = sorted(df["Remetente"].dropna().astype(str).unique())
@@ -938,7 +971,7 @@ excel_bytes = gerar_excel(
 )
 
 st.download_button(
-    "📥 Baixar Excel",
+    "📥 Baixar Excel Consolidado",
     data=excel_bytes,
     file_name="torre_controle_unidades.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
